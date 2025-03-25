@@ -1,0 +1,25 @@
+[project]
+name = "genealogy-manager"
+version = "0.1.0"
+description = "Genealogy management library/software."
+authors = [
+    {name = "Eric Zhuo Chen", email = "ericzhuochen@outlook.com"},
+]
+dependencies = ["matplotlib>=3.10.1", "numpy>=2.2.4"]
+requires-python = "<3.14,>=3.11"
+readme = "README.md"
+classifiers = [
+  "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.5",
+    "isort>=6.0.1",
+]
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.pdm]
+distribution = true
