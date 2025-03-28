@@ -1,8 +1,11 @@
 """家谱树数据结构。"""
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from os import PathLike
 from typing import Any, Optional, Self, Tuple
+
+from gmlib import GMLIB_VERSION
 
 
 @dataclass
@@ -19,16 +22,6 @@ class Card:
     biography: str = ""
     # 照片 URI
     photo_uri: str = ""
-
-
-@dataclass
-class GenerationIndexDefinition:
-    """一个“世数”定义。"""
-
-    # 该世数的名称
-    name: str
-    # 相对于标准世数的偏移量
-    offset: int
 
 
 class Draw:
@@ -76,22 +69,40 @@ class HierachyError(Exception):
     pass
 
 
+@dataclass
+class GenerationIndexDefinition:
+    """一个世数定义。"""
+
+    # 该世数的名称
+    name: str
+    # 相对于标准世数的偏移量
+    offset: int
+
+
+@dataclass
+class GenerationIndexSettings:
+    """世数配置。"""
+
+    # 第零层节点对应的默认世数
+    base: int = 1
+    # 世数定义列表
+    defs: list[GenerationIndexDefinition] = field(
+        default_factory=lambda: [GenerationIndexDefinition(name="世数", offset=0)]
+    )
+
+
 class Tree:
     """一棵家谱树。"""
 
     # 由多层节点组成的二维列表，由 i 和 j 索引
     layers: list[list[Node]]
 
-    # 世数设定，由一系列世数定义组成，其中零号为默认世数
-    gi_setting: list[GenerationIndexDefinition]
-
-    # 基础世数，即第零层对应的默认世数
-    gi_base: int
+    # 世数配置
+    gi_settings: GenerationIndexSettings
 
     def __init__(self):
         self.layers = []
-        self.gi_setting = [GenerationIndexDefinition(name="世数", offset=0)]
-        self.gi_base = 1
+        self.gi_settings = GenerationIndexSettings()
         self.canvas = (0, 0)
 
     def __iter__(self):
@@ -301,8 +312,10 @@ class Tree:
         # 注册所有节点，并建立名字-节点字典
         nodes: dict[str, Node] = {}
         for i, name_layer in enumerate(name_layers):
+            tree.layers.append([])
             for name in name_layer:
-                node = tree.new_node_at_y(Card(name=name), i)
+                node = Node(Card(name=name))
+                tree.layers[-1].append(node)
                 nodes[name] = node
         # 建立父子关系
         for i in range(len(tree.layers)):
@@ -317,14 +330,14 @@ class Tree:
     def set_gi(self, node: Node, gi: int, gi_index: int = 0):
         """设置节点的某世数，以此更新整个家谱树的基础世数。"""
         node_i, _ = self.find_ij(node)
-        offset = self.gi_setting[gi_index].offset
-        self.gi_base = gi - offset - node_i
+        offset = self.gi_settings.defs[gi_index].offset
+        self.gi_settings.base = gi - offset - node_i
 
     def compute_gi(self, node: Node, gi_index: int = 0):
         """计算节点的某世数。"""
         node_i, _ = self.find_ij(node)
-        offset = self.gi_setting[gi_index].offset
-        return self.gi_base + node_i + offset
+        offset = self.gi_settings.defs[gi_index].offset
+        return self.gi_settings.base + node_i + offset
 
     def _update_contour(self, node: Node):
         """更新节点的 Reingold-Tilford 轮廓。
@@ -410,7 +423,6 @@ class Tree:
         while stacking():
             move()
 
-
     def preview_layout(self):
         """用 Matplotlib 预览家谱树布局。"""
         import matplotlib.pyplot as plt
@@ -437,7 +449,7 @@ class Tree:
         for i in range(len(self.layers)):
             x = x_min + NODE_SPACING
             y = -LAYER_HEIGHT * (i + 0.5)
-            gi = i + self.gi_base
+            gi = i + self.gi_settings.base
             plt.text(x, y, str(gi), **gi_props)
 
         # 绘制所有边框与文字
@@ -494,3 +506,84 @@ class Tree:
         plt.axis("off")
         plt.title("家谱树预览")
         plt.show()
+
+    def save_json(self, fpath: str | PathLike):
+        """保存家谱树为 JSON 文件。"""
+        import json
+
+        data: list[list[dict[str, Any]]] = []
+        for i, layer in enumerate(self.layers):
+            data_layer: list[dict[str, Any]] = []
+            for node in layer:
+                child_indices: list[int] = []
+                for child in node.children:
+                    child_indices.append(self.layers[i + 1].index(child))
+                data_layer.append(
+                    {
+                        "name": node.card.name,
+                        "birth_year": node.card.birth_year,
+                        "death_year": node.card.death_year,
+                        "biography": node.card.biography,
+                        "photo_uri": node.card.photo_uri,
+                        "children": child_indices,
+                    }
+                )
+            data.append(data_layer)
+
+        gi_defs: list[dict[str, Any]] = [
+            {"name": d.name, "offset": d.offset} for d in self.gi_settings.defs
+        ]
+        gi_settings: dict[str, Any] = {"base": self.gi_settings.base, "defs": gi_defs}
+
+        obj = {
+            "gmlib_version": GMLIB_VERSION,
+            "data": data,
+            "settings": {"gi": gi_settings}
+        }
+        with open(fpath, "w") as fp:
+            json.dump(obj, fp)
+
+    @classmethod
+    def load_json(cls, fpath: str | PathLike) -> Self:
+        """从 JSON 文件读取家谱树。"""
+        import json
+
+        with open(fpath, "r") as fp:
+            obj: dict = json.load(fp)
+        if "gmlib_version" not in obj:
+            raise IOError("该文件不是有效的家谱文件")
+        data: list[list[dict[str, Any]]] = obj["data"]
+        gi_settings: dict[str, Any] = obj["settings"]["gi"]
+
+        tree = cls()
+        child_indices: list[list[list[int]]] = []
+        for data_layer in data:
+            child_indices.append([])
+            tree.layers.append([])
+            for entry in data_layer:
+                node = Node(
+                    Card(
+                        name=entry["name"],
+                        birth_year=entry["birth_year"],
+                        death_year=entry["death_year"],
+                        biography=entry["biography"],
+                        photo_uri=entry["photo_uri"],
+                    )
+                )
+                tree.layers[-1].append(node)
+                child_indices[-1].append(entry["children"])
+        for i in range(len(child_indices)):
+            for j in range(len(child_indices[i])):
+                for child_index in child_indices[i][j]:
+                    parent = tree.layers[i][j]
+                    child = tree.layers[i + 1][child_index]
+                    parent.children.append(child)
+                    child.parent = parent
+
+        tree.gi_settings.base = gi_settings["base"]
+        tree.gi_settings.defs = [
+            GenerationIndexDefinition(name=d["name"], offset=d["offset"])
+            for d in gi_settings["defs"]
+        ]
+
+        return tree

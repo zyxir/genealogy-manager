@@ -1,3 +1,6 @@
+import os
+import tempfile
+
 import pytest
 
 from gmlib.models import Card, GenerationIndexDefinition, HierachyError, Tree
@@ -40,7 +43,9 @@ class TestTree:
         """世数计算测试。"""
         str_repr = "a(b,c,d);b(e,f),c(),d(g);e(),f(h),g();h()"
         tree = Tree.from_str_repr(str_repr)
-        tree.gi_setting.append(GenerationIndexDefinition(name="太古世数", offset=-10))
+        tree.gi_settings.defs.append(
+            GenerationIndexDefinition(name="太古世数", offset=-10)
+        )
         b = tree.find_node("b")
         h = tree.find_node("h")
         assert tree.compute_gi(b) == 2
@@ -49,3 +54,15 @@ class TestTree:
         assert tree.compute_gi(b) == 15
         tree.set_gi(h, 6, 1)
         assert tree.compute_gi(b) == 14
+
+    def test_json(self):
+        """JSON 导出/读取测试。"""
+        str_repr = "a(b,c,d);b(e,f),c(),d(g);e(),f(h),g();h()"
+        tree = Tree.from_str_repr(str_repr)
+        tree.find_node("c").card.biography = "复杂的 bio"
+        with tempfile.TemporaryDirectory() as tempdir:
+            fpath = os.path.join(tempdir, "test.json")
+            tree.save_json(fpath)
+            new_tree = Tree.load_json(fpath)
+            assert tree.str_repr() == new_tree.str_repr()
+            assert tree.find_node("c").card.biography == "复杂的 bio"
