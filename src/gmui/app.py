@@ -1,7 +1,7 @@
 """应用及相关配置定义。"""
 
 import sys
-from typing import Sequence
+from typing import Any, Sequence
 
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import QApplication
@@ -18,9 +18,9 @@ class AppColors:
     # 悬停填充色
     HOVER = QColor("lightblue")
     # 画布背景色一
-    BG1 = QColor("#f9f9f9")
+    BG1 = QColor("#f0f0f0")
     # 画布背景色二
-    BG2 = QColor("#e0e0e0")
+    BG2 = QColor("#d5d5d5")
 
 
 class AppFonts:
@@ -45,6 +45,21 @@ class AppFonts:
         if bold:
             font.setBold(True)
         return font
+
+
+class Debuggable:
+    """可以设置 debug 信息的组件。"""
+
+    def __init__(self):
+        self._debug_info: dict[str, Any] = {}
+
+    def set_debug_info(self, **kwargs):
+        """设置 debug 信息。"""
+        self._debug_info.update(kwargs)
+
+    def get_debug_str(self) -> str:
+        """获取 debug 信息为字符串。"""
+        ...
 
 
 class App(QApplication):

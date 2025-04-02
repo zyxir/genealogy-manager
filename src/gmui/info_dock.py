@@ -3,7 +3,7 @@
 from typing import ClassVar, Optional, Tuple
 
 from gmlib import Card
-from PySide6.QtCore import QSize, Signal
+from PySide6.QtCore import Signal
 from PySide6.QtGui import QFont, QTextDocument, Qt
 from PySide6.QtWidgets import (
     QDockWidget,
@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from gmui.app import AppFonts
+from gmui.dialog import confirmation_dialog
 
 
 class YearsDisplay(QWidget):
@@ -49,11 +50,11 @@ class YearsDisplay(QWidget):
         else:
             self.setVisible(True)
             if birth_year is None:
-                self._birth_year.setText("    ")
+                self._birth_year.setText("")
             else:
                 self._birth_year.setText(str(birth_year))
             if death_year is None:
-                self._death_year.setText("    ")
+                self._death_year.setText("")
             else:
                 self._death_year.setText(str(death_year))
 
@@ -85,11 +86,11 @@ class YearsEdit(QWidget):
     def set_years(self, birth_year: Optional[int], death_year: Optional[int]):
         """设置生卒年。"""
         if birth_year is None:
-            self._birth_year.setText("    ")
+            self._birth_year.setText("")
         else:
             self._birth_year.setText(str(birth_year))
         if death_year is None:
-            self._death_year.setText("    ")
+            self._death_year.setText("")
         else:
             self._death_year.setText(str(death_year))
 
@@ -116,6 +117,8 @@ class CardDisplay(QWidget):
 
     # 「编辑」按钮
     edit_btn: QPushButton
+    # 「删除」按钮
+    del_btn: QPushButton
     # 「关闭」按钮
     close_btn: QPushButton
 
@@ -145,6 +148,10 @@ class CardDisplay(QWidget):
         # 「编辑」按钮
         self.edit_btn = QPushButton(self.tr("编辑"))
         layout.addWidget(self.edit_btn)
+
+        # 「删除」按钮
+        self.del_btn = QPushButton(self.tr("删除"))
+        layout.addWidget(self.del_btn)
 
         # 「关闭」按钮
         self.close_btn = QPushButton(self.tr("关闭"))
@@ -224,6 +231,7 @@ class CardEdit(QFrame):
     def edit_card(self, card: Card):
         """编辑某名片。"""
         self._name.setText(card.name)
+        self._name.setFocus()
         self._years.set_years(card.birth_year, card.death_year)
         self._bio.setHtml(card.bio)
 
@@ -246,6 +254,8 @@ class InfoDock(QDockWidget):
     card_closed = Signal()
     # 「名片已完成编辑」信号
     card_edited = Signal(Card)
+    # 「名片已删除」信号
+    card_deleted = Signal()
 
     # 当前展示的名片
     _card: Card
@@ -261,6 +271,7 @@ class InfoDock(QDockWidget):
         self.empty_widget = QWidget()
         self.card_display = CardDisplay()
         self.card_display.edit_btn.clicked.connect(self.edit_card)
+        self.card_display.del_btn.clicked.connect(self.delete_card)
         self.card_display.close_btn.clicked.connect(self.close_card)
         self.card_edit = CardEdit()
         self.card_edit.save_btn.clicked.connect(self.save_card)
@@ -295,3 +306,12 @@ class InfoDock(QDockWidget):
         """关闭当前名片，并发送相关信号。"""
         self.setWidget(self.empty_widget)
         self.card_closed.emit()
+
+    def delete_card(self):
+        """删除名片对应的节点，并发送相关信号。"""
+        confirmed = confirmation_dialog(
+            self.tr("删除人员"), self.tr("确定要删除该人员吗？")
+        )
+        if confirmed:
+            self.setWidget(self.empty_widget)
+            self.card_deleted.emit()

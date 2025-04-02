@@ -59,7 +59,7 @@ class TestTree:
         )
         b, h = 1, 7
         assert tree.compute_gi(b) == [2, -8]
-        tree.set_gi(h, 17)
+        tree.apply_edits(tree.edits_for_set_gi(h, 0, 17))
         assert tree.compute_gi(b) == [15, 5]
-        tree.set_gi(h, 6, 1)
+        tree.apply_edits(tree.edits_for_set_gi(h, 1, 6))
         assert tree.compute_gi(b) == [14, 4]

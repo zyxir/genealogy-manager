@@ -1,11 +1,13 @@
 """Qt 应用程序定义。"""
 
+import logging
+from collections import deque
 from typing import ClassVar
 
-from gmlib import Card, Tree
+from gmlib import Card, Tree, TreeEdit
 from PySide6.QtCore import QSize
 from PySide6.QtGui import QAction, QIcon, QKeySequence, Qt
-from PySide6.QtWidgets import QMainWindow
+from PySide6.QtWidgets import QMainWindow, QStatusBar
 
 from gmui.about_dialog import AboutDialog
 from gmui.canvas import Canvas, CanvasView
@@ -23,19 +25,30 @@ class Window(QMainWindow):
     _tree: Tree
     # 当前展示的节点 ID，负数表示无
     _displayed_id: int
+    # 撤消栈
+    _undo_stack: deque[list[TreeEdit]]
+    # 重做栈
+    _redo_stack: deque[list[TreeEdit]]
+
+    # Debug 模式
+    _debug: bool
 
     # 画布
     canvas: Canvas
     # 信息侧栏
     info_dock: InfoDock
 
-    def __init__(self):
+    def __init__(self, debug=False):
         super().__init__()
         self._tree = Tree()
         self._displayed_id = -1
+        self._undo_stack = deque()
+        self._redo_stack = deque()
+        self._debug = debug
 
-        # 菜单栏
+        # 菜单栏、工具栏、状态条
         self._setup_menu()
+        _ = self.statusBar()
 
         # 主控件：画布
         canvas_view = CanvasView()
@@ -53,9 +66,16 @@ class Window(QMainWindow):
         self.setWindowTitle(self.tr("家谱通"))
 
         # 连接信号
+        self.canvas.status_tip_requested.connect(
+            lambda tip: self.statusBar().showMessage(tip)
+        )
+        self.canvas.status_tip_canceled.connect(lambda: self.statusBar().clearMessage())
         self.canvas.box_highlighted.connect(self._canvas_box_highlighted_slot)
+        self.canvas.new_box_requested.connect(self._canvas_new_box_requested_slot)
+        self.canvas.new_child_requested.connect(self._canvas_new_child_requested_slot)
         self.info_dock.card_edited.connect(self._info_dock_card_edited_slot)
         self.info_dock.card_closed.connect(self._info_dock_card_closed_slot)
+        self.info_dock.card_deleted.connect(self._info_dock_card_deleted_slot)
 
     def _setup_menu(self):
         """创建与配置菜单。"""
@@ -121,27 +141,37 @@ class Window(QMainWindow):
 
     def load_demo_tree(self):
         """加载示例树。"""
-        import random
-        import lorem
-        str_repr = ""
-        str_repr += "张甲(张一,张二),张乙(张三);"
-        str_repr += "张一(张子),张二(张丑,张寅),张三(张卯),张四(张巳,张午),张五;"
-        str_repr += (
-            "张子(张泰,张华),张丑,张寅,张卯,张辰,张巳,张午(张嵩),张未(张恒,张衡);"
-        )
-        str_repr += "张泰,张华(张小),张嵩,张恒,张衡;"
-        str_repr += "张小;"
-        self._tree = Tree.from_str_repr(str_repr)
-        for id in self._tree.ids():
-            card = self._tree.get_node_card(id)
-            if random.random() < 0.7:
-                card.birth_year = random.randint(1000, 2000)
-            if random.random() < 0.7:
-                card.death_year = random.randint(1050, 2050)
-            card.bio = lorem.paragraph()
-            self._tree.set_node_card(id, card)
+        self._tree = Tree.demo_tree()
         self.canvas.sync_tree(self._tree)
         self.info_dock.close_card()
+
+    def _do(self, edits: list[TreeEdit]):
+        """执行操作，并将它们记录到撤消栈。"""
+        logging.debug("doing edits: %s", edits)
+        self._tree.apply_edits(edits)
+        self._undo_stack.append(edits)
+
+    def _update_widgets(self):
+        """每次撤消/重做后可能需要的更新控件显示。"""
+        self.canvas.sync_tree(self._tree)
+        if self.info_dock.widget == self.info_dock.card_display:
+            card = self._tree.get_node_card(self._displayed_id)
+            self.info_dock.display_card(card)
+
+    def _undo(self):
+        """撤消。"""
+        edits = self._undo_stack.pop()
+        reversed_edits = [edit.reverse() for edit in reversed(edits)]
+        self._tree.apply_edits(reversed_edits)
+        self._redo_stack.append(edits)
+        self._update_widgets()
+
+    def _redo(self):
+        """重做。"""
+        edits = self._redo_stack.pop()
+        self._tree.apply_edits(edits)
+        self._undo_stack.append(edits)
+        self._update_widgets()
 
     def _canvas_box_highlighted_slot(self, id: int):
         """当画布高亮某方块后，记录其 ID，并在侧栏展示它。"""
@@ -151,10 +181,39 @@ class Window(QMainWindow):
         card = self._tree.get_node_card(id)
         self.info_dock.display_card(card)
 
+    def _canvas_new_box_requested_slot(self, index_y: int):
+        """当画布要求在某层新建节点时，新建节点，并刷新画布。"""
+        # 新建节点
+        logging.debug("new node requested at y=%d", index_y)
+        edits = self._tree.edits_for_new_node(index_y, Card())
+        self._do(edits)
+        id = self._tree.last_id()
+        # 刷新画布
+        self.canvas.sync_tree(self._tree)
+        # 高亮新建的方块
+        self.canvas.highlight_box(id)
+        # 在侧栏编辑它
+        self.info_dock.edit_card()
+
+    def _canvas_new_child_requested_slot(self, id: int):
+        """当画布要求为某节点新建子嗣时，做相应操作。"""
+        # 新建子节点
+        logging.debug("new child node for id=%d requested", id)
+        edits = self._tree.edits_for_new_child(id, Card())
+        self._do(edits)
+        id = self._tree.last_id()
+        # 刷新画布
+        self.canvas.sync_tree(self._tree)
+        # 高亮新建的方块
+        self.canvas.highlight_box(id)
+        # 在侧栏编辑它
+        self.info_dock.edit_card()
+
     def _info_dock_card_edited_slot(self, card: Card):
         """当信息侧栏更新了名片后，更新家谱树中的信息与画布中的展示信息。"""
         # 更新家谱树
-        self._tree.set_node_card(self._displayed_id, card)
+        edits = self._tree.edits_for_set_card(self._displayed_id, card)
+        self._do(edits)
         # 更新画布
         self.canvas.update_box_info(self._displayed_id, card)
 
@@ -164,3 +223,15 @@ class Window(QMainWindow):
         self._displayed_id = -1
         # 取消画布中的方块高亮
         self.canvas.dehighlight_boxes()
+
+    def _info_dock_card_deleted_slot(self):
+        """当在侧栏中删除节点时，做相应操作。"""
+        # 清除画布高亮
+        self.canvas.dehighlight_boxes()
+        # 除除节点
+        edits = self._tree.edits_for_delete_node(self._displayed_id)
+        self._do(edits)
+        # 更新画布
+        self.canvas.sync_tree(self._tree)
+        # 清空记录的 ID
+        self._displayed_id = -1

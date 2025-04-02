@@ -2,7 +2,9 @@
 
 import re
 from dataclasses import dataclass, field
-from typing import Iterator, Optional, Self, Tuple, Union
+from typing import Optional, Self, Tuple, Union
+
+from gmlib._lorem import gen_lorem_text
 
 
 @dataclass
@@ -47,6 +49,8 @@ class TreeError(Exception):
 class GenerationIndexDefinition:
     """一个世数定义。"""
 
+    DEFAULT_NAME = "默认序世"
+
     # 该世数的名称
     name: str
     # 相对于标准世数的偏移量
@@ -61,7 +65,11 @@ class GenerationIndexSettings:
     base: int = 1
     # 世数定义列表
     defs: list[GenerationIndexDefinition] = field(
-        default_factory=lambda: [GenerationIndexDefinition(name="世数", offset=0)]
+        default_factory=lambda: [
+            GenerationIndexDefinition(
+                name=GenerationIndexDefinition.DEFAULT_NAME, offset=0
+            )
+        ]
     )
 
 
@@ -157,6 +165,28 @@ class MoveNode(TreeEdit):
         return MoveNode(self.id, self.new_x, self.old_x)
 
 
+@dataclass
+class ModifyCard(TreeEdit):
+    """修改节点名片卡。"""
+
+    id: int
+    old_card: Card
+    new_card: Card
+
+    def reverse(self) -> "ModifyCard":
+        return ModifyCard(self.id, self.new_card, self.old_card)
+
+
+@dataclass
+class ModifyGenerationIndex(TreeEdit):
+    """修改节点世数。"""
+
+    id: int
+    gi_index: int
+    old_gi: int
+    new_gi: int
+
+
 class TreeEditError(Exception):
     """原子编辑相关错误。"""
 
@@ -171,39 +201,38 @@ class Tree:
     # 由多层节点组成的二维列表，由 i 和 j 索引，用于记录节点左右位置
     _node_layers: list[list[Node]]
     # 各节点在 _node_layers 中的索引，用于快速反查索引
-    _node_indices: dict[int, "_NodeIndex"]
+    _node_yxs: dict[int, Tuple[int, int]]
     # 配置
     settings: TreeSettings
-
-    # 节点在树中的索引 (y, x)
-    @dataclass
-    class _NodeIndex:
-        y: int
-        x: int
 
     def __init__(self):
         self._last_id = -1
         self._node_dict = {}
         self._node_layers = []
-        self._node_indices = {}
+        self._node_yxs = {}
         self.settings = TreeSettings()
 
     def nlayers(self) -> int:
         """获得层数。"""
         return len(self._node_layers)
 
+    def ids(self) -> list[int]:
+        """所有节点 ID 的列表。"""
+        return list(self._node_dict.keys())
+
+    def obtain_id(self) -> int:
+        """获取一个新节点 ID。"""
+        self._last_id += 1
+        return self._last_id
+
     def get_node_yx(self, id: int) -> Tuple[int, int]:
         """获取指定 ID 节点的索引。"""
-        index = self._node_indices[id]
-        return (index.y, index.x)
+        index = self._node_yxs[id]
+        return index
 
     def get_node_card(self, id: int) -> Card:
         """获取指定 ID 节点的名片。"""
         return self._node_dict[id].card
-
-    def set_node_card(self, id: int, card: Card):
-        """设置指定 ID 节点的名片。"""
-        self._node_dict[id].card = card
 
     def get_node_parent_id(self, id: int) -> int:
         """获取指定 ID 节点的父节点 ID。"""
@@ -213,18 +242,15 @@ class Tree:
         """获取指定 ID 节点的所有子节点 ID。"""
         return self._node_dict[id].child_ids
 
-    def ids(self) -> Iterator[int]:
-        """所有节点 ID 的迭代器。"""
-        return iter(self._node_dict.keys())
+    def compute_layer_gi(self, y: int) -> list[int]:
+        """计算层的全部世数。"""
+        gi = [self.settings.gi.base + y + d.offset for d in self.settings.gi.defs]
+        return gi
 
-    def nodes(self) -> Iterator[Node]:
-        """所有节点的迭代器。"""
-        return iter(self._node_dict.values())
-
-    def obtain_id(self) -> int:
-        """获取一个新节点 ID。"""
-        self._last_id += 1
-        return self._last_id
+    def compute_gi(self, id: int) -> list[int]:
+        """计算节点的全部世数。"""
+        node_y = self._node_yxs[id][0]
+        return self.compute_layer_gi(node_y)
 
     def last_id(self) -> int:
         """获取上一个被创建节点的 ID。"""
@@ -239,7 +265,7 @@ class Tree:
                 self._node_dict[id] = node
                 x = len(self._node_layers[y])
                 self._node_layers[y].append(node)
-                self._node_indices[id] = self._NodeIndex(y=y, x=x)
+                self._node_yxs[id] = (y, x)
             # 从字典和层删除节点，并删除索引
             case DeleteRightmostNode(y, id, card):
                 node = self._node_layers[y][-1]
@@ -247,20 +273,26 @@ class Tree:
                     raise TreeEditError("node info does not match edit info")
                 del self._node_dict[id]
                 del self._node_layers[y][-1]
-                del self._node_indices[id]
+                del self._node_yxs[id]
             # 修改节点索引后添加层
             case NewLayer(y):
                 for layer in self._node_layers[y:]:
                     for node in layer:
                         id = node.id
-                        self._node_indices[id].y += 1
+                        self._node_yxs[id] = (
+                            self._node_yxs[id][0] + 1,
+                            self._node_yxs[id][1],
+                        )
                 self._node_layers.insert(y, [])
             # 修改节点索引后删除层
             case DeleteLayer(y):
                 for layer in self._node_layers[y + 1 :]:
                     for node in layer:
                         id = node.id
-                        self._node_indices[id].y -= 1
+                        self._node_yxs[id] = (
+                            self._node_yxs[id][0] - 1,
+                            self._node_yxs[id][1],
+                        )
                 del self._node_layers[y]
             # 添加父子关系，适时报错
             case SetAsChild(parent_id, child_id):
@@ -268,8 +300,8 @@ class Tree:
                 child = self._node_dict[child_id]
                 if child_id in parent.child_ids or child.parent_id == parent_id:
                     raise TreeEditError("repeatedly setting as child")
-                parent_y = self._node_indices[parent_id].y
-                child_y = self._node_indices[child_id].y
+                parent_y = self._node_yxs[parent_id][0]
+                child_y = self._node_yxs[child_id][0]
                 if child_y != parent_y + 1:
                     raise TreeEditError("child y is not parent y plus 1")
                 self._node_dict[parent_id].child_ids.append(child_id)
@@ -280,8 +312,8 @@ class Tree:
                 child = self._node_dict[child_id]
                 if child_id not in parent.child_ids or child.parent_id != parent_id:
                     raise TreeEditError("no existing parent-child relationship")
-                parent_y = self._node_indices[parent_id].y
-                child_y = self._node_indices[child_id].y
+                parent_y = self._node_yxs[parent_id][0]
+                child_y = self._node_yxs[child_id][0]
                 if child_y != parent_y + 1:
                     raise TreeEditError("child y is not parent y plus 1")
                 self._node_dict[parent_id].child_ids.remove(child_id)
@@ -290,19 +322,33 @@ class Tree:
             case MoveNode(id, old_x, new_x):
                 if old_x == new_x:
                     return
-                index = self._node_indices[id]
-                if index.x != old_x:
-                    raise TreeEditError(f"old_x ({old_x}) is not actual x ({index.x})")
+                y, x = self._node_yxs[id]
+                if x != old_x:
+                    raise TreeEditError(f"old_x ({old_x}) is not actual x ({x})")
                 if new_x > old_x:
-                    for node in self._node_layers[index.y][old_x + 1 : new_x]:
-                        self._node_indices[node.id].x -= 1
+                    for node in self._node_layers[y][old_x + 1 : new_x]:
+                        self._node_yxs[node.id] = (
+                            self._node_yxs[node.id][0],
+                            self._node_yxs[node.id][1] - 1,
+                        )
                 else:
-                    for node in self._node_layers[index.y][new_x : old_x - 1]:
+                    for node in self._node_layers[y][new_x : old_x - 1]:
                         id = node.id
-                        self._node_indices[node.id].x += 1
-                del self._node_layers[index.y][old_x]
-                self._node_layers[index.y].insert(new_x, self._node_dict[id])
-                self._node_indices[id].x = new_x
+                        self._node_yxs[node.id] = (
+                            self._node_yxs[node.id][0],
+                            self._node_yxs[node.id][1] + 1,
+                        )
+                del self._node_layers[y][old_x]
+                self._node_layers[y].insert(new_x, self._node_dict[id])
+                self._node_yxs[id] = (self._node_yxs[id][0], new_x)
+            # 修改节点名片
+            case ModifyCard(id, _, new_card):
+                self._node_dict[id].card = new_card
+            # 修改节点世数
+            case ModifyGenerationIndex(id, gi_index, _, new_gi):
+                node_y = self._node_yxs[id][0]
+                offset = self.settings.gi.defs[gi_index].offset
+                self.settings.gi.base = new_gi - offset - node_y
 
     def apply_edits(self, edits: Union[TreeEdit, list[TreeEdit]]):
         """实施原子编辑。"""
@@ -312,36 +358,36 @@ class Tree:
             for edit in edits:
                 self._apply_edit(edit)
 
-    def compute_new_child_x(self, id: int) -> int:
+    def _compute_new_child_x(self, id: int) -> int:
         """计算为节点插入子节点的合适 x 索引。"""
-        index = self._node_indices[id]
+        y, x = self._node_yxs[id]
         # 向左找到第一个有子节点的节点，称之为 ref
-        ref_x = index.x
-        while ref_x >= 0 and not self._node_layers[index.y][ref_x].child_ids:
+        ref_x = x
+        while ref_x >= 0 and not self._node_layers[y][ref_x].child_ids:
             ref_x = ref_x - 1
         # 若找不到，则新节点应该被插入到 0 号索引
         if ref_x == -1:
             return 0
         # 若找到了，新节点应该被插入到 ref 的最右子节点之右侧
         else:
-            ref_child_ids = self._node_layers[index.y][ref_x].child_ids
-            ref_child_xs = [self._node_indices[id].x for id in ref_child_ids]
+            ref_child_ids = self._node_layers[y][ref_x].child_ids
+            ref_child_xs = [self._node_yxs[id][1] for id in ref_child_ids]
             return max(ref_child_xs) + 1
 
-    def compute_new_parent_x(self, id: int) -> int:
+    def _compute_new_parent_x(self, id: int) -> int:
         """计算为节点插入父节点的合适 x 索引。"""
-        index = self._node_indices[id]
+        y, x = self._node_yxs[id]
         # 向左找到第一个有父节点的节点，称之为 ref
-        ref_x = index.x
-        while ref_x >= 0 and self._node_layers[index.y][ref_x].parent_id < 0:
+        ref_x = x
+        while ref_x >= 0 and self._node_layers[y][ref_x].parent_id < 0:
             ref_x = ref_x - 1
         # 若找不到，则新节点应该被插入到 0 号索引
         if ref_x == -1:
             return 0
         # 若找到了，新节点应该被插入到 ref 的父节点的右侧
         else:
-            ref_parent_id = self._node_layers[index.y][ref_x].parent_id
-            ref_parent_x = self._node_indices[ref_parent_id].x
+            ref_parent_id = self._node_layers[y][ref_x].parent_id
+            ref_parent_x = self._node_yxs[ref_parent_id][1]
             return ref_parent_x + 1
 
     def str_repr(self) -> str:
@@ -407,7 +453,7 @@ class Tree:
                 node = Node(id=id, card=Card(name=name))
                 tree._node_dict[id] = node
                 tree._node_layers[-1].append(node)
-                tree._node_indices[id] = cls._NodeIndex(y=y, x=x)
+                tree._node_yxs[id] = (y, x)
                 nodes[name] = node
         # 建立父子关系
         for y in range(len(tree._node_layers)):
@@ -418,18 +464,6 @@ class Tree:
                     layer[x].child_ids.append(nodes[child_name].id)
                     nodes[child_name].parent_id = layer[x].id
         return tree
-
-    def set_gi(self, id: int, gi: int, gi_index: int = 0):
-        """设置节点的某世数，以此更新整个家谱树的基础世数。"""
-        node_y = self._node_indices[id].y
-        offset = self.settings.gi.defs[gi_index].offset
-        self.settings.gi.base = gi - offset - node_y
-
-    def compute_gi(self, id: int) -> list[int]:
-        """计算节点的全部世数。"""
-        node_y = self._node_indices[id].y
-        gi = [self.settings.gi.base + node_y + d.offset for d in self.settings.gi.defs]
-        return gi
 
     def compute_painting_xs(self) -> dict[int, float]:
         """计算所有节点的绘图横坐标。
@@ -488,10 +522,10 @@ class Tree:
             for i in range(len(rcons[rid])):
                 rcons[rid][i] += mods[rid]
 
-        def move():
+        def move_nodes():
             """逐层进行重叠判断，设置 mod，并以此修改 x。"""
             # 逐层比较轮廓，并设置 mod。
-            for i in reversed(range(len(self._node_layers) - 1)):
+            for i in reversed(range(len(self._node_layers))):
                 layer = self._node_layers[i]
                 # 计算该层所有节点的轮廓
                 for node in layer:
@@ -515,30 +549,128 @@ class Tree:
                         mods[child_id] += mods[node.id]
                     mods[node.id] = 0
 
-        def stacking() -> bool:
-            """判断当前节点位置布局是否有重叠。"""
-            for layer in self._node_layers:
-                lx, rx = 0, 1
-                while rx < len(layer):
-                    lnode, rnode = layer[lx], layer[rx]
-                    spacing = (
-                        SUBTREE_SPACING
-                        if lnode.parent_id != rnode.parent_id
-                        or (lnode.parent_id < 0 and rnode.parent_id < 0)
-                        else 1
-                    )
-                    if xs[layer[lx].id] > xs[layer[rx].id] - spacing:
-                        return True
-                    lx, rx = lx + 1, rx + 1
-            return False
-
         # 为最后一层节点设置初始 x 值与轮廓
         for index_x, node in enumerate(self._node_layers[-1]):
             xs[node.id] = index_x + 0.5
             update_contour(node.id)
 
-        # 进行一次 move。若仍有重叠，则再次 move，直到无重叠为止。
-        move()
-        while stacking():
-            move()
+        # 进行两次 move 基本可以保证孤节点也不会重叠。
+        move_nodes()
+        move_nodes()
         return xs
+
+    def edits_for_new_node(self, y: int, card: Card) -> list[TreeEdit]:
+        """获取在某层新建节点所需的原子操作。
+
+        层数小于 0 和大于等于层数时，表示要新建层。
+        """
+        edits: list[TreeEdit] = []
+        if y < 0:
+            y = 0
+            edits.append(NewLayer(0))
+        elif y >= self.nlayers():
+            y = self.nlayers()
+            edits.append(NewLayer(self.nlayers()))
+        id = self.obtain_id()
+        edits.append(NewRightmostNode(y, id, card))
+        return edits
+
+    def edits_for_delete_node(self, id: int) -> list[TreeEdit]:
+        """获取删除节点所需的原子操作。"""
+        edits: list[TreeEdit] = []
+        node = self._node_dict[id]
+        if node.parent_id >= 0:
+            edits.append(UnsetAsChild(node.parent_id, id))
+        for child_id in node.child_ids:
+            edits.append(UnsetAsChild(id, child_id))
+        y, x = self._node_yxs[id]
+        new_x = len(self._node_layers[y])
+        edits.append(MoveNode(id, x, new_x))
+        edits.append(DeleteRightmostNode(y, id, node.card))
+        return edits
+
+    def edits_for_set_as_child(self, parent_id: int, child_id: int) -> list[TreeEdit]:
+        """获取设置父子关系所需的原子操作。"""
+        return [SetAsChild(parent_id, child_id)]
+
+    def edits_for_new_parent(self, child_id: int, card: Card) -> list[TreeEdit]:
+        """获取新建父节点所需的原子操作。"""
+        edits: list[TreeEdit] = []
+        parent_x = self._compute_new_parent_x(child_id)
+        child_y, _ = self._node_yxs[child_id]
+        if child_y == 0:
+            edits.append(NewLayer(0))
+            parent_y = 0
+            old_x = 0
+        else:
+            parent_y = child_y - 1
+            old_x = len(self._node_layers[parent_y])
+        parent_id = self.obtain_id()
+        edits.append(NewRightmostNode(parent_y, parent_id, card))
+        edits.append(MoveNode(parent_id, old_x, parent_x))
+        edits.append(SetAsChild(parent_id, child_id))
+        return edits
+
+    def edits_for_new_child(self, parent_id: int, card: Card) -> list[TreeEdit]:
+        """获取新建子节点所需的原子操作。"""
+        edits: list[TreeEdit] = []
+        child_x = self._compute_new_child_x(parent_id)
+        parent_y, _ = self._node_yxs[parent_id]
+        if parent_y == self.nlayers() - 1:
+            edits.append(NewLayer(self.nlayers()))
+            child_y = self.nlayers()
+            old_x = 0
+        else:
+            child_y = parent_y + 1
+            old_x = len(self._node_layers[child_y])
+        child_id = self.obtain_id()
+        edits.append(NewRightmostNode(child_y, child_id, card))
+        edits.append(MoveNode(child_id, old_x, child_x))
+        edits.append(SetAsChild(parent_id, child_id))
+        return edits
+
+    def edits_for_set_card(self, id: int, card: Card) -> list[TreeEdit]:
+        """获取设置名片所需的原子操作。"""
+        old_card = self.get_node_card(id)
+        return [ModifyCard(id, old_card, card)]
+
+    def edits_for_set_gi(self, id: int, gi_index: int, gi: int) -> list[TreeEdit]:
+        """获取设置世数所需的原子操作。"""
+        old_gi = self.compute_gi(id)[gi_index]
+        return [ModifyGenerationIndex(id, gi_index, old_gi, gi)]
+
+    @classmethod
+    def demo_tree(cls) -> Self:
+        """生成示例树用于测试。"""
+        import random
+
+        str_repr = ""
+        str_repr += "张甲(张一,张二),张乙(张三);"
+        str_repr += "张一(张子),张二(张丑,张寅),张三(张卯),张四(张辰,张巳),张五;"
+        str_repr += "张子(张泰,张华),张丑,张寅,张卯,张辰(张嵩),张巳(张恒,张衡);"
+        str_repr += "张泰,张华(张小),张嵩,张恒,张衡;"
+        str_repr += "张小;"
+        min_byear = 1900
+        max_byear = 1920
+        min_age = 50
+        max_age = 95
+
+        tree = cls.from_str_repr(str_repr)
+        for y, layer in enumerate(tree._node_layers):
+            for node in layer:
+                card = node.card
+                if random.random() < 0.7:
+                    card.birth_year = random.randint(min_byear, max_byear) + y * 25
+                if random.random() < 0.7:
+                    if card.birth_year is None:
+                        card.death_year = (
+                            random.randint(min_byear + min_age, max_byear + max_age)
+                            + y * 25
+                        )
+                    else:
+                        card.death_year = (
+                            random.randint(min_age, max_age) + card.birth_year
+                        )
+                if random.random() < 0.5:
+                    card.bio = gen_lorem_text()
+        return tree
